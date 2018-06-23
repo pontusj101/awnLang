@@ -1,0 +1,730 @@
+
+category System {
+
+	abstractAsset Machine {
+		
+		// Adapted off coreLang, with minor changes.
+			
+		| connect
+			info: "Attempt to connect on the machine."
+			->	authenticatedAccess
+		    
+		| authenticate
+			info: "Does the attacker have the credentials of an account?"
+			->	authenticatedAccess
+
+		& authenticatedAccess
+			info: "One way to gain access to a machine is through legitimate authentication."
+			->	access
+			
+		| compromisedAccess
+			info: "This attack step is for when the IAM account is compromised."
+			rationale: "Placeholder for attacks in Instance and Bucket."
+ 
+		| access
+			rationale: "We don't explicitly model root access; that is not a sound primitive. Instead, such an account can be modelled explicitly by providing an account with access to all executees and all data."
+			->	_machineAccess
+
+		| _machineAccess
+			rationale: "This is a helper attack step that will also be used from the childs of this asset."
+			->	denialOfService, 
+				data.requestAccess,
+				executees.connect,
+				vulnerability.exploit
+
+		| denialOfService
+			info: "Perform a DoS attack on the machine."
+			->	executees.denialOfService,
+				data.denyAccess
+	
+	}
+
+	asset Instance extends Machine 
+		info: "Amazon Elastic Compute Cloud (Amazon EC2) is a web service that provides resizeable computing capacity—literally, servers in Amazon's data centers—that you use to build and host your software systems." {
+		
+		// AWSLang specific asset
+		
+		| keyaccess
+			info: "Once you have the access key to the instance, you can attempt connection to the instance."
+			->	attemptConnectBasicAWSProtection,
+				attemptConnectAdvancedAWSProtection
+
+		& attemptConnectBasicAWSProtection
+			info: "AWS by default provides an asymmetric key pair authentication system. Each user can have multiple Amazon EC2 key pairs, and can launch new instances using different key pairs. EC2 key pairs are not related to the AWS account or IAM user credentials."
+			rationale: "via the 'Amazon EC2 Key Pairs' documentation: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-key-pairs.html"
+			->	authenticate
+
+		| attemptConnectAdvancedAWSProtection [ExponentialDistribution(6.0)]
+			info: "If you have higher security requirements, you can implement alternative authentication mechanisms, including LDAP or Active Directory authentication, and disable Amazon EC2 key pair authentication. Breaking the LDAP or the Active Directory would require additional time for reaching the next attack step, hence the distribution."
+			rationale: "via the 'AWS Seccurity Best Practices' whitepaper: https://d1.awsstatic.com/whitepapers/Security/AWS_Security_Best_Practices.pdf [Page 09 of 74]"
+			->	authenticate
+					
+		# advancedAWSProtection
+			->	attemptConnectBasicAWSProtection
+		
+		| compromisedAccess
+			info: "The root AWS account can create IAM users which can then create and launch instances. However in case of AWS, we will need something that can model what happens when console-level access is compromised."
+			rationale: "Even with compromisedAccess, connecting to the machine would be difficult since the attacker would still require private keys of the individuals. At the compromisedAccess level, the attacker can however start/stop/reboot/terminate instances. Terminating instances could lead to denial of service for other users and, even worse, deletion of data."
+			->	denialOfService,
+				data.delete
+				
+		# hostIDS
+			rationale: "via the 'AWS Seccurity Best Practices' whitepaper: https://d1.awsstatic.com/whitepapers/Security/AWS_Security_Best_Practices.pdf [Page 46 of 74]"
+			
+	}
+	
+	asset Bucket extends Machine 
+		info: "Amazon S3 stores data as objects within buckets." {
+			
+		// AWSLang specific asset
+	
+		| compromisedAccess
+			->	access,
+				denialOfService
+			
+		| attemptConnectPublicBucket
+			info: "Since every S3 bucket has a unique name, it is possible to do a dictionary attack and find publically accessible buckets."
+			rationale: "via https://digi.ninja/blog/whats_in_amazons_buckets.php"
+			->	bruteForceAttack
+			
+		& bruteForceAttack [ExponentialDistribution(3.0)]
+			info: "An attacker may be able to find publically accessible buckets, but access to its contents would depend on whether the user/owner of the data has kept it public or private."
+			->	data.requestAccess
+				
+		# privateBucket
+			info: "By default, all buckets in AWS S3 are private."
+			->	bruteForceAttack	//	It's a good idea to keep this as 'true' while writing the test cases etc., since this is the default behaviour.
+				
+		# mfaDelete
+			info: "For services such as Amazon S3, you can use MFA Delete to require multi-factor authentication to delete an object, limiting access to Amazon S3 objects to privileged users."
+			rationale: "via the 'AWS Seccurity Best Practices' whitepaper: https://d1.awsstatic.com/whitepapers/Security/AWS_Security_Best_Practices.pdf [Page 27 of 74]"
+	
+	}
+	
+	abstractAsset Software extends Machine 
+		info: "Specifies the operating system, application, etc. running on the instances" {
+		
+		// Adapted off coreLang
+		
+		| access
+			->	_softwareAccess
+			
+		| _softwareAccess
+			->	executor.connect
+		
+		# patchStatus
+			info: "Ensure not only that all software on the instance is patch up-to-date, but that it is patched correctly."
+			rationale: "partly based on the 'AWS Systems Manager Patch Manager' documentation: https://docs.aws.amazon.com/systems-manager/latest/userguide/systems-manager-patch.html"
+			->	vulnerability.exploit
+		
+	}
+	
+	asset OperatingSystem extends Software 
+		info: "OperatingSystem refers to AMIs in context to the AWS environment" {
+			
+		// Adapted off coreLang, with minor changes.
+			
+		| _softwareAccess
+			->	executor.connect,
+				executees.connect	//	from the OS, you should also be able to connect to the applications running on it
+			
+		# insecureCustomAMIs
+			info: "Custom/shared AMIs should follow the required security guidelines to ensure no exposed attack surface."
+			rationale: "via the 'Guidelines for Shared Linux AMIs' documentation: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/building-shared-amis.html"
+			->	vulnerability.exploit
+	
+	}
+
+
+	asset Application extends Software 
+		info: "Application refers to different softwares, tools, etc. available on an instance" {
+			
+		// Adapted off coreLang, with minor changes.
+			
+		| access
+			info: "AWS allows the possibility to set up third party firewalls that control access to that application."
+			rationale: "via the 'AWS Seccurity Best Practices' whitepaper: https://d1.awsstatic.com/whitepapers/Security/AWS_Security_Best_Practices.pdf [Page 60 of 74]"
+			->	attemptAccessNoFirewall,
+				attemptAccessWithFirewall
+				
+		& attemptAccessNoFirewall
+			->	_machineAccess
+			
+		| attemptAccessWithFirewall [ExponentialDistribution(3.0)]
+			rationale: "Compromising the firewall would require additional time for reaching the next attack step, hence the distribution."
+			->	_machineAccess
+			
+		# firewallProtection
+			->	attemptAccessNoFirewall
+		
+	}
+
+	asset Service extends Application {
+		
+		// intentionally left blank
+		
+	}
+	
+	asset Client extends Application {
+		
+		// intentionally left blank
+		
+	}
+	
+	asset AuthenticationService extends Service 
+		rationale: "Authentication service is not actively involved in account authentication (e.g. key.read leads directly to account.authenticate), because that is not needed for the attacks we are interested in."	{
+			
+		| access
+			info: "If a service is tasked with authentication of accounts, its compromise leads to the compromise of the associated accounts."
+			-> 	_softwareAccess,
+				authenticatedAccounts.authenticate
+
+	}
+	
+	asset EncryptionService extends Service
+		info: "AWS provides server-side encryption of objects that can be stored in S3 buckets so it's a good idea to model this as a service." {
+		
+		| access
+			info: "If a service is tasked with encryption of data, its compromise leads to the compromise of the associated data, albeit up to a limit."
+			->	_softwareAccess,
+				encryptedData.read,
+				encryptedData.write
+				
+	}
+
+	asset NetworkService extends Service 
+		info: "Represents a service running on top of a network." {
+		
+		| access
+			info: "If you have compromised the NetworkService, you should be able to manipulate the associated dataflows."
+			->	_softwareAccess,
+				dataflows.respond,
+				dataflows.denialOfService
+					
+	}
+	
+	asset NetworkClient extends Client 
+		info: "Represents a client connected to a service running on a network." {
+		
+		| access
+			info: "If you have compromised the NetworkClient, you should be able to manipulate the associated dataflows."
+			->	_softwareAccess,
+				dataflows.request,
+				dataflows.denialOfService
+
+	}
+	
+}
+
+category Networking {
+	
+	asset Network 
+		info: "Network in context of the AWS environment represents the Amazon Virtual Private Cloud (Amazon VPC), that enables you to launch Amazon Web Services (AWS) resources into a virtual network that you've defined." 
+		rationale: "There is no eavesdrop or ManInTheMiddle (in the traditional sense) for subnets in a VPC since the subnets are isolated in the AWS environment. The only way (more or less) to attack the network is compromise of the IAM account. via the 'AWS Seccurity Best Practices' whitepaper: https://d1.awsstatic.com/whitepapers/Security/AWS_Security_Best_Practices.pdf [Page 50 of 74]" { 
+		
+		// Adapted off coreLang, with changes.
+		
+		| compromisedAccess
+			info: "The root AWS account can create IAM users which can then create and launch VPCs. However in case of AWS, we will need something that can model what happens when console-level access is compromised. With compromisedAccess, the attacker has complete access to create and/or modify networks and the associated gateways." 
+			->	_access,
+				machines.connect
+			
+		& _access
+			->	denialOfService,
+				trafficGateways.compromisedAccess
+	
+		| denialOfService
+			info: "The network is made unavailable."
+			-> 	dataflows.denialOfService 
+	}
+
+    
+	asset Gateway
+		info: "Gateway in context of the AWS environment represents both NAT Gateways and Internet Gateways, or route tables connecting subnets in a VPC." 
+		rationale: "partly based on the 'Amazon Virtual Private Cloud Connectivity Options' whitepaper: https://media.amazonwebservices.com/AWS_Amazon_VPC_Connectivity_Options.pdf" {
+			
+		// Adapted off coreLang ('Router extends NetworkService'), with changes.
+		
+		| compromisedAccess
+			info: "As mentioned above, compromisedAccess represents the compromise of the IAM account that created the VPC and the associated gateways."
+			->	_access
+			
+		& _access 
+			-> 	createNewConnections,
+				denialOfService
+				
+		| createNewConnections
+			info: "createNewConnections is a dynamic attack step that an attacker can do if they are able to compromise the IAM account, where they use their privileges to create connections between entities where there were none before."
+		
+		| denialOfService 
+			->	trafficNetworks.denialOfService
+			
+	}
+	
+}
+
+category Communication {
+
+	asset Information
+		info: "Information can be stored as data and transmitted in data flows. Data and data flows are syntactic forms of the semantics represented by the Information asset. Thus, multiple data and data flow assets can contain the same information." {
+			
+		// Adapted off coreLang
+			
+		| read
+			info: "When information is read by the attacker, any associated confidentiality costs are incurred. It is sufficient that the attacker reads a single data or data flow to breach confidentiality."
+
+		& write
+			info: "When information is written by the attacker, any associated integrity costs are incurred. The attacker must, however, compromise all data and data flows in order to breach integrity. Thus, if the records of an ATM are modified, this might incur no cost as long as the master data is untouched."
+
+		& delete
+			info: "When information is deleted by the attacker, any associated availability costs are incurred. The attacker must, however, delete all data and data flows in order to breach integrity. Thus, if malware wipes a hard drive, this might incur no cost as long as a backup is easily accessible."
+			
+	}
+	
+	asset Data
+		info: "Data is a concrete, syntactic representation of Information at rest." {
+			
+		// Adapted off coreLang
+		
+		| requestAccess  
+			info: "When stored on a machine, access control needs to be granted."
+			->	authenticatedRead,
+				authenticatedWrite,
+				authenticatedDelete
+			
+		| anyAccountRead 
+			info: "A single account with read privileges (in conjuction with data access) is enough to read the data."
+			->	authenticatedRead
+			
+		| anyAccountWrite
+			info: "A single account with write privileges (in conjuction with data access) is enough to write the data."
+			->	authenticatedWrite
+
+		| anyAccountDelete
+			info: "A single account with delete privileges (in conjuction with data access) is enough to delete the data."
+			->	authenticatedDelete
+
+		& authenticatedRead
+			info: "Access and authentication will allow reading of data."
+			->	read
+
+		& authenticatedWrite
+			info: "Access and authentication will allow writing of data."
+			->	write
+
+		& authenticatedDelete
+			info: "Access and authentication will allow deleting of data."
+			->	delete
+
+		| read
+			info: "An attacker that reads the data, learns the encoded information."
+			->	information.read,
+				containedData.read
+
+		| write
+			->	delete,
+				information.write,
+				containedData.write
+
+		| delete
+			info: "Deletion of data leads to information loss only if there is no untouched copy elsewhere. If data is transmitted through data flows, those data flows will also be affected by the tampering."
+			->	information.delete,
+				containedData.delete
+
+		| denyAccess
+			info: "Denial-of-service attacks can make data unavailable."
+			
+	}
+
+	asset EncryptedData extends Data {
+		
+		// Adapted off coreLang
+	
+		& authenticatedRead
+			info: "Access and authentication will allow reading of data."
+			->	readEncrypted
+
+		& authenticatedWrite
+			info: "Access and authentication will allow writing of data."
+			->	writeEncrypted
+			
+		& readEncrypted
+			->	read
+
+		& writeEncrypted
+			->	write
+			
+	}
+	
+	asset Dataflow
+		info: "Dataflow is a channel that contains Data in transit." {
+			
+		// Adapted off coreLang, with minor changes
+		
+		| request
+			->	services.connect
+
+		| respond
+			->	clients.connect,
+				executingClients.access
+			
+		| denialOfService
+			info: "A denial-of-service-attack on the dataflow makes the contained data inaccessible. The information may, however also be available elsewhere."
+			->	data.denyAccess
+					
+		# encryption
+			info: "Dataflows can be encrypted. For example: in case API calls, they can be encrypted using access keys and MFA."
+			
+	}
+	
+}
+
+category Security {
+	
+	asset SecurityGroup 
+		info: "IAM accounts can create security groups that affectively control how dataflows work. Since security groups run at instance level and not on subnet level, so to associate them with Network is counterproductive." 
+		rationale: "via the 'Security Groups for Your VPC' documentation: https://docs.aws.amazon.com/AmazonVPC/latest/UserGuide/VPC_SecurityGroups.html" {
+			
+		// AWSLang specific asset
+			
+		| compromisedAccess
+			info: "Compromise of the IAM account that created/controls the VPC would also allow you to manipulate the security groups on the VPC."
+			->	dataflows.request,
+				dataflows.respond,
+				dataflows.denialOfService
+				
+	}
+	
+	asset Vulnerability {
+		
+		// Adapted off coreLang
+
+		| exploit [ExponentialDistribution(10.0)]
+			info: "An attacker can exploit a known vulnerability."
+			->	privileges.compromise
+			
+    }
+	
+	asset Account {
+			
+		// Adapted off coreLang, with minor changes.
+			
+		| authenticate
+			info: "After authentication on an account, compromise its privileges."
+			->	compromise
+			
+		| compromise
+			info: "A compromised account leads to authentication on machines, access rights on data, and authentication on other connected accounts."
+			->	_machineAccessForRolesAndGroups,	//	helper attack step for Roles and Groups
+				assignedSoftwares.authenticate,
+				readData.anyAccountRead,
+				writtenData.anyAccountWrite,
+				deletedData.anyAccountDelete,
+				authenticatees.authenticate			//	authenticatees here can also be IAM Roles
+				
+		| _machineAccessForRolesAndGroups			//	placeholder for attack step in Role and Group
+	
+	}
+	
+	asset IAMaccount extends Account {
+		
+		// AWSLang specific asset
+		
+		| compromise
+			->	accessedBuckets.authenticate,
+				readData.anyAccountRead,
+				writtenData.anyAccountWrite,
+				deletedData.anyAccountDelete,
+				authenticatees.authenticate,	//	authenticatees here can also be IAM Roles
+				groups.authenticate,			//	if an attacker is able to compromise an IAM account, they should have access to the group the IAM account is member of
+				compromisedAccess
+			
+		| compromisedAccess
+			info: "A compromised IAM account, in addition to authentication on machines, access rights on data, and authentication on other connected accounts, would also also allow an attacker to manipulate the groups, roles, subnets and gateways it created/controls."
+			->	accessedInstances.compromisedAccess,
+				accessedBuckets.compromisedAccess,
+				CreatedIAMgroups.compromisedAccess,
+				role.compromisedAccess,
+				networks.compromisedAccess,
+				trafficGateways.compromisedAccess,
+				securityGroup.compromisedAccess
+		
+		| addToGroup
+			info: "Adding the IAM user to a group that leads to unchecked privileges."
+			->	accessedInstances.compromisedAccess,
+				accessedBuckets.compromisedAccess
+				
+		| deleteFromGroup
+			info: "Removal of the IAM user from a group that had access to resources."
+			->	accessedInstances.denialOfService,
+				accessedBuckets.denialOfService
+		
+	}
+	
+	asset Role extends Account
+		info: "IAM roles delegate temporary access to users, applications, or services that don't normally have access to your AWS resources." 
+		rationale: "Since a role does not have standard long-term credentials (password or access keys) associated with it, and instead, if a user assumes a role, temporary security credentials are created dynamically and provided to the user, there is no association with credentials. (partly based on the 'AWS Security Token Service' documentation: https://docs.aws.amazon.com/STS/latest/APIReference/API_AssumeRole.html)" {
+			
+		// AWSLang specific asset
+		
+		| _machineAccessForRolesAndGroups
+			->	accessedInstances.authenticate,		//	indirect access; without the access key
+				accessedBuckets.authenticate
+		    
+		| compromisedAccess
+			info: "An attacker cannot compromise an IAM role directly. They need to first compromise the IAM user account that has enough privileges to create and modify IAM roles."
+			->	addRole,
+				deleteRole
+			
+		| addRole
+			info: "addRole is a dynamic attack step that an attacker can do if they are able to compromise the IAM account, where they use their privileges to create connections between entities where there were none before."
+			
+		| deleteRole
+			info: "An attacker can use the privileges of a compromised IAM account to deny the temporary access delegated."
+			->	readData.denyAccess,
+				writtenData.denyAccess,
+				deletedData.denyAccess
+
+	}
+	
+	asset Group extends Account
+		info: "IAM user accounts can be put together into a IAM group."
+		rationale: "A group is not truly an 'identity' in IAM because it cannot be identified as a Principal in a permission policy. It is simply a way to attach policies to multiple users at one time. (via the 'IAM Groups' documentation: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_groups.html" {
+			
+		// AWSLang specific asset
+		
+		| _machineAccessForRolesAndGroups
+			->	accessedBuckets.authenticate
+					
+		| compromisedAccess
+			info: "An attacker cannot compromise an IAM group directly. They need to first compromise an IAM user account that has enough privileges to create and modify IAM groups. With compromisedAccess, an attacker could: add users to the group, remove users from the group, modify permissions for the group."
+			->	potentialMemberIAMaccounts.addToGroup,
+				memberIAMaccounts.deleteFromGroup
+				
+	}
+	
+	asset Credentials extends Data 
+		info: "IAM account and applications on instances can have access control through a username/password combination" {
+			
+		// Adapted off coreLang
+			
+	    | read
+			info: "Reading credentials is equivalent to finding the password of an account."
+			rationale: "Reading credentials will not lead authentication of roles and groups even though they are accounts and Accounts <--> Credentials (as mentioned in the associations section of this MAL specification) because for Roles, cracking credentials is not as simple as cracking a username/password combination (partly based on the 'AWS Security Token Service' documentation: https://docs.aws.amazon.com/STS/latest/APIReference/API_AssumeRole.html) and for Groups, there is no username/password combination to crack. The idea of keeping it as Account is to model some sort of access control that Groups provide."
+	    	->	accounts.authenticate
+			
+		| attemptCrack
+			info: "An attacker can attempt to crack the password of an account via the known methods."
+			->	attemptBruteForceAttack,
+				attemptDictionaryAttack
+			  
+		| attemptBruteForceAttack
+			->	bruteForceAttack
+			
+		| attemptDictionaryAttack
+	    	->	dictionaryAttack
+			
+		& bruteForceAttack [UniformDistribution(0.0, 100.0)]
+	    	info: "A raw brute-force attack is always possible, but feasible only sometimes. The distribution parameter (time for search space exhaustion) depends on the encryption scheme, the attacked entropy (e.g. key entropy), and the attacker equipment. It is therefore determined in crypto-suite-specializations of EncryptedData, e.g. MD5EncryptedData."
+	    	rationale: "Raw brute-forcing is a linear process that has an equal chance of stumbling over the answer at any point between the start of the search and the complete exhaustion ofthe search space."
+			// APT's might be expected to have a factor 10-100 times better performance than anything publically known? (http://www.dagbladet.no/nyheter/nis-aquires-supercomputer/61602521)
+	    	-> 	accounts.authenticate
+
+		& dictionaryAttack [GammaDistribution(0.3, 0.25)]
+			info: "If the information is predictable (e.g. default passwords), it is easier to crack when encrypted. For offline cracking, we define a predictable password as one that can be found (with a frequency higher than 1) in a dictionary such as RockYou. Even with 4096 iterations bcrypt, such passwords are cracked in an hour. (A slow bcrypt cracker does 100 hashes/second. With 90-95% probability, it will be enough to try the 360 000 most popular passwords in RockYou to find one randomly drawn from RockYou's accounts.) "
+			rationale: "The nominal Gamma distribution scale factor for RockYou is 2,000,000 (GammaDistribution(0.3, 2000000)). It should be divided by the number of hashes that can be brute-forced per day. For MD5, this would be 200 GH/s*3600*24. Even with 4096 iterations bcrypt, predictable passwords are cracked in an hour. (A slow bcrypt cracker does 100 hashes/second. With 90-95% probability, it will be enough to try the 360 000 most popular passwords in RockYou to find one randomly drawn from RockYou's accounts.) However, for online cracking, the number of hashes per day might be 3600*24, leading to GammaDistribution[0.3, 23], which would mean about a month for 95% cracking probability (Probability[t < 30, t belongs to GammaDistribution[0.3, 23]] = 0.945)."
+			// APT's might be expected to have a factor 10-100 times better performance than anything publically known? (http://www.dagbladet.no/nyheter/nis-aquires-supercomputer/61602521)
+			->	accounts.authenticate
+			
+	}
+	
+	asset Key extends Data {
+
+		// intentionally left blank
+	
+	}
+	
+	asset AccessKey extends Key 
+		info: "Users need their own access keys to make programmatic calls to AWS from the AWS Command Line Interface (AWS CLI), Tools for Windows PowerShell, the AWS SDKs, or direct HTTP calls using the APIs for individual AWS services. To fill this need, you can create, modify, view, or rotate access keys (access key IDs and secret access keys) for IAM users." 
+		rationale: "via the 'Managing Access Keys for IAM Users' documentation: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html" {
+			
+		// AWSLang specific asset
+		
+		| modifyKeyFile 
+			info: "If you lose the private key for an EBS-backed instance, you can regain access to your instance. You must stop the instance, detach its root volume and attach it to another instance as a data volume, modify the authorized_keys file, move the volume back to the original instance, and restart the instance. This procedure isn't supported for instance store-backed instances."
+			rationale: "via the 'Connecting to Your Linux Instance if You Lose Your Private Key' documentation: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-key-pairs.html#replacing-lost-key-pair"
+			->	_compromise
+			
+		// "_compromise" is a helper attack step that leads to the actual compromise of access key. This is just to write the test cases better.
+			
+		& _compromise [ExponentialDistribution(6.0)]
+			->	compromise
+	
+		| compromise
+			->	assignedInstances.keyaccess,		//	access to the key pair of the instance not only allows you access to the instance it was assigned to--
+				assignedOSaccount.authenticate		//	--but also root level privileges to the AMI on the instance
+		
+	}
+	
+	asset CryptographicKey extends Key 
+		info: "AWS Key Management Service (KMS) is an encryption and key management service scaled for the cloud. We assume, for the time being, that this service is primarily used for all encryption/decryption purposes in the AWS environment."
+		rationale: "via the 'AWS Key Management Service' documentation: https://aws.amazon.com/kms/" {
+			
+		// Adapted off coreLang, with minor changes
+				
+        | read 
+			info: "Reading the cryptographic key is basically the attacker getting access to the cryptographic keys. This would allow the attacker to manipulate encrypted data."
+			rationale: "However, considering the current scope of the specification, this would require the attacker to compromise the AWS KMS somehow, hence the distribution."
+			->	compromise
+			
+		& compromise [ExponentialDistribution(10.0)]
+			->	decryptedData.readEncrypted,
+				encryptedData.writeEncrypted
+
+	}
+
+}
+
+category People {
+	
+	asset User 
+		info: "User here refers to the actual person using AWS and not the IAM user account" {
+			
+		// Adapted off coreLang
+		
+		| phishingAttempt
+			info: "An attacker can use various social engineering techniques, such as Phishing for this case, to get passwords for various user accounts."
+			->	phishUnawareUser,
+				phishAwareUser
+
+		| phishAwareUser
+			->	phish
+
+		& phishUnawareUser
+			->	phish
+
+		| phish
+			info: "A successful phishing attempt would get the user access to the passwords for various user accounts. This can be for simply an application on the instance, or the IAM account itself."
+			->	accounts.authenticate
+
+		# securityAware
+			info: "If the user is well-versed with various security concerns and how to prevent them, a phishing attempt should not be successful."
+			->	phishUnawareUser
+				
+	}
+	
+}
+
+
+associations {
+	
+	Machine				[executor]							0-1		<-- 			Execution						--> 	*		[executees]					Software
+		info: "Software runs on machine."
+	
+	Account 			[account]		    				*		<-- 			ExecutionPrivileges				-->		*		[accessedInstances]			Instance
+	
+	Account 			[account]		    				*		<-- 			ExecutionPrivileges				-->		*		[accessedBuckets]			Bucket
+		info: "Every machine needs to have some sort of account associated with it. In case of buckets in AWS, it is the IAM account; in case of instances in AWS, it is the OS account."
+		
+	Account 			[assignedAccounts]					1-* 	<-- 			AccountAssignment				--> 	*		[assignedSoftwares] 		Software
+		info: "Every software needs to have at least one account associated with it, but can have as many as required."
+	
+	User				[users]								*		<--				Account							-->		*		[accounts]					Account
+		info: "Users need to have accounts to access the machines, softwares, applications in the environment. These accounts can be IAM accounts, OS/application account, roles, groups, etc."
+	
+	Account 			[accounts]							*  		<-- 			Credentials						--> 	*		[credentials] 				Credentials
+		info: "Accounts usually have some username/password combination and would therefore need an association with credentials. (Not Roles and Groups, however. Please refer to the aforementioned note for credentials.read)"
+
+	User				[users]								*		<--				Keys							--> 	*		[Key]						Key
+		info: "Users can have various keys unique to themselves or shared between many users. These keys can be the access keys for the instances or cryptographic keys for encryption/decryption of data."
+	
+	AccessKey			[accessKey]							0-1		<--				Instances						-->		0-1		[assignedInstances]			Instance
+		info: "Every instance, when created for the first time, has a pair of access keys associated with it."
+		
+	AccessKey			[accessKey]							0-1		<--				OSaccount						-->		0-1		[assignedOSaccount]			Account
+		info: "Access to the key pair of the instance not only allows you access to the instance it was assigned to, but also root level privileges to the AMI on the instance."
+		
+	IAMaccount			[IAMaccounts]						*		<--				Creation						-->		*		[role]						Role
+		info: "IAM accounts (with enough privileges) can create roles."
+		
+	IAMaccount			[IAMaccounts]						*		<--				Creation						-->		*		[networks]					Network
+		info: "IAM accounts (with enough privileges) can create and manage subnets."
+		
+	IAMaccount			[IAMaccounts]						*		<--				Creation						-->		*		[trafficGateways]			Gateway
+		info: "IAM accounts (with enough privileges) can create and manage gateways."
+		
+	IAMaccount			[IAMaccounts]						*		<--				Creation						-->		*		[securityGroup]				SecurityGroup
+		info: "IAM accounts (with enough privileges) can create and manage security groups."
+	
+	IAMaccount			[CreatorIAMaccounts]				0-1		<--				Creator							-->		*		[CreatedIAMgroups]			Group
+		info: "An IAM group can only be created by an IAM account."
+		
+	IAMaccount			[memberIAMaccounts]					*		<--				Member							-->		*		[groups]					Group
+		info: "Multiple IAM user accounts can be held together in an IAM group. There is a limit to the possible number of members in an IAM group, but that depends on the user quota for the account."
+		rationale: "(via the 'Limitations on IAM Entities and Objects' documentation: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_iam-limits.html)"
+		
+	IAMaccount			[potentialMemberIAMaccounts]		*		<--				PotentialMember					-->		*		[potentialgroups]			Group
+		info: "Not every IAM user account can be added in an IAM group."
+	
+	Account				[authenticators]					*		<-- 			Authentication					--> 	*		[authenticatees]	 		Account
+		info: "We need to model the associations between authenticators and authenticatees."
+		
+	Account 			[authenticatedAccounts]				*		<-- 			AccountAuthentication 			--> 	1		[authenticationServices]	AuthenticationService
+		info: "Conceptually, authentication is separated from access control (obvious in the case of e.g. Radius servers). authenticationServices provide the authentication service."
+	
+	Account 			[readAccess]						*  		<-- 			Read							--> 	*		[readData] 					Data
+	Account 			[writeAccess]						*  		<-- 			Write							--> 	*		[writtenData] 				Data
+	Account 			[deleteAccess]						*  		<-- 			Delete							--> 	*		[deletedData] 				Data
+		info: "Once you have access, you can read/write/delete data."
+	
+	Data				[data] 								*		<-- 			Representation 					--> 	0-1		[information] 				Information
+		info: "The data constitutes a syntactic representation at rest of the information."
+	
+	Data				[data]		 						*		<-- 			Storage 						--> 	*		[machines]					Machine
+		info: "Data is stored on machines."
+	
+	Data				[containingData] 					*		<-- 			Containment 					--> 	*		[containedData] 			Data
+		info: "Syntactic representation of saying something like 'readData is only readable data available to some users, writeData is only writable data available to some users, but both are part of Data. Data = readData + writeData, and depending on what user you are, you have access to either (or both).'"
+	
+	Machine 			[machine] 			  				1-*   	<-- 			Exposure   						--> 	* 	    [vulnerability]   			Vulnerability
+		info: "Machines can be exposed to vulnerabilities (known or unknown)."
+	
+	Account 			[privileges]   			  			1-*   	<-- 			Privileges 						--> 	*       [vulnerability]   			Vulnerability
+		info: "Unchecked account privileges can lead to vulnerabilities."
+	
+	EncryptedData		[decryptedData]						*		<-- 			Decryption						-->		*		[decryptionKeys]			CryptographicKey
+	EncryptedData		[encryptedData]						*		<-- 			Encryption						-->		*		[encryptionKeys]			CryptographicKey
+		info: "Data anywhere in the AWS environment can be encrypted/decrypted, either on the client-side or on the server-side."
+	
+	EncryptedData 		[encryptedData]						* 		<-- 			Encryption 						--> 	1 		[encryptionService] 		EncryptionService
+		info: "An encryption service is required to encrypt data."
+		
+	Network				[trafficNetworks]					*		<--				Connection						-->		*		[machines]					Machine
+		info: "Machines such as Instances and Buckets can be added to a subnet in a VPC. For instances, it is simply launching the resource from within the subnet; for buckets, administrator can define policies that restricts connections to the bucket only from a particular subnet in a VPC."
+	
+	Network 			[trafficNetworks]					* 		<-- 			Connection 						--> 	* 		[trafficGateways]			Gateway
+		info: "To facilitate traffic to and fro networks you need to connect with gateways."
+	
+	Network 			[networks]							* 		<-- 			Communication 					--> 	*		[dataflows] 				Dataflow
+		info: "Network communicate via channels called dataflows."
+	
+	Dataflow			[dataflows]							* 		<-- 			Request							--> 	*		[clients]					NetworkClient
+		info: "NetworkClient will request data via channels."
+	
+	Dataflow			[dataflows]							* 		<-- 			Response						--> 	*		[services]					NetworkService
+		info: "NetworkService will respond to requests via channels."
+	
+	SecurityGroup		[securityGroup]						*		<--				Control							-->		*		[dataflows]					Dataflow
+		info: "IAM accounts can create security groups that affectively control how dataflows work."
+	
+	Dataflow			[programDistributionFlow]			* 		<-- 		ProgramDistributionToClient			--> 	*		[executingClients] 			NetworkClient
+		info: "Some servers distribute programs to clients, e.g. software updates, or Web applications."
+		
+	Dataflow			[programDistributionFlow]			* 		<-- 		ProgramDistributionFromServer		--> 	*		[providingServices]			NetworkService
+		info: "Some servers distribute programs to clients, e.g. software updates, or Web applications."
+		
+	Dataflow			[dataflow]							0-1		<-- 			Transmission					--> 	0-1		[data]						Data
+		info: "You would need a channel off the data for its transmission."
+		
+}
+

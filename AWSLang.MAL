@@ -423,7 +423,7 @@ category Security {
 				deletedData.anyAccountDelete,
 				authenticatees.authenticate			//	authenticatees here can also be IAM Roles
 				
-		| _machineAccessForRolesAndGroups			//	placeholder for attack step in Role and Group
+		| _machineAccessForRolesAndGroups			
 	
 	}
 	
